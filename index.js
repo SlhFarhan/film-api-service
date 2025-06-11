@@ -94,8 +94,72 @@ app.post('/films', upload.single('image'), async (req, res) => {
     }
 });
 
+// Endpoint untuk UPDATE (Edit) nama dan/atau gambar film
+app.put('/films/:id', upload.single('image'), async (req, res) => {
+    const userId = req.headers.authorization;
+    const { id } = req.params;
+    const { name } = req.body;
+
+    if (!userId) {
+        return res.status(401).json({ error: 'Authorization header is required.' });
+    }
+    if (!name) {
+        return res.status(400).json({ error: 'New name is required.' });
+    }
+
+    try {
+        let newPublicUrl = null;
+
+        // Jika ada gambar baru yang diupload
+        if (req.file) {
+            // Hapus gambar lama dari storage terlebih dahulu
+            const { rows: oldFilm } = await pool.query('SELECT image_url FROM films WHERE id = $1 AND user_id = $2', [id, userId]);
+            if (oldFilm.length > 0) {
+                const oldImageUrl = oldFilm[0].image_url;
+                const oldFileName = oldImageUrl.split('/').pop();
+                await supabase.storage.from('film-images').remove([oldFileName]);
+            }
+
+            // Upload gambar baru
+            const newFileName = `${Date.now()}-${req.file.originalname}`;
+            const { error: uploadError } = await supabase.storage
+                .from('film-images')
+                .upload(newFileName, req.file.buffer, { contentType: req.file.mimetype });
+
+            if (uploadError) throw uploadError;
+
+            // Dapatkan URL publik gambar baru
+            newPublicUrl = supabase.storage.from('film-images').getPublicUrl(newFileName).data.publicUrl;
+        }
+
+        // Siapkan query untuk update database
+        let query, queryParams;
+        if (newPublicUrl) {
+            // Jika ada gambar baru, update nama dan image_url
+            query = 'UPDATE films SET name = $1, image_url = $2 WHERE id = $3 AND user_id = $4 RETURNING *';
+            queryParams = [name, newPublicUrl, id, userId];
+        } else {
+            // Jika tidak ada gambar baru, hanya update nama
+            query = 'UPDATE films SET name = $1 WHERE id = $2 AND user_id = $3 RETURNING *';
+            queryParams = [name, id, userId];
+        }
+        
+        const { rows } = await pool.query(query, queryParams);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Film not found or permission denied.' });
+        }
+
+        res.status(200).json({ status: 'success', message: 'Film updated successfully.', data: rows[0] });
+
+    } catch (err) {
+        console.error('Error updating film:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+
 // Endpoint untuk DELETE film
-// Menggunakan path parameter :id, lebih standar untuk REST
 app.delete('/films/:id', async (req, res) => {
     const userId = req.headers.authorization;
     const { id } = req.params;
